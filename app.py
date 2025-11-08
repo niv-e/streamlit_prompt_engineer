@@ -32,9 +32,17 @@ prompt_technique = st.sidebar.selectbox(
     ["None", "Few-shot", "Chain-of-Thought", "Persona-based"]
 )
 
+if st.sidebar.button("New Chat"):
+    st.session_state.messages = []
+    st.rerun()
+
 # Chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "user_input" not in st.session_state:
+    st.session_state.user_input = ""
+if "enhanced_prompt" not in st.session_state:
+    st.session_state.enhanced_prompt = ""
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
@@ -42,56 +50,108 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Function to enrich prompt based on selected technique
-def enrich_prompt(user_prompt, technique):
-    if technique == "Few-shot":
-        # Example few-shot: provide examples to guide the model
-        return (
-            "Here are a few examples:\n"
-            "Q: What is the capital of France?\nA: Paris.\n"
-            "Q: What is the capital of Japan?\nA: Tokyo.\n"
-            f"Now, answer the following question based on the examples: {user_prompt}"
-        )
-    elif technique == "Chain-of-Thought":
-        # Example Chain-of-Thought: encourage step-by-step reasoning
-        return (
-            "Let's think step by step. "
-            f"When answering the following question, explain your reasoning: {user_prompt}"
-        )
-    elif technique == "Persona-based":
-        # Example Persona-based: assign a persona to the model
-        return (
-            "You are a helpful and knowledgeable AI assistant. "
-            f"Answer the following question as accurately as possible: {user_prompt}"
-        )
-    else:
+def enrich_prompt(user_prompt, technique, model, temperature, top_p, top_k):
+    if technique == "None":
         return user_prompt
 
-# Chat input
-if prompt := st.chat_input("Enter your prompt here..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    enhancement_instruction = ""
+    if technique == "Few-shot":
+        enhancement_instruction = (
+            "Generate a few-shot prompt based on the user's input. "
+            "Provide 2-3 relevant examples before the user's actual prompt to guide the model. "
+            "The examples should be in a Question-Answer format if applicable, or demonstrate the desired output style."
+        )
+    elif technique == "Chain-of-Thought":
+        enhancement_instruction = (
+            "Generate a Chain-of-Thought prompt based on the user's input. "
+            "Add a prefix like 'Let's think step by step.' and instruct the model to explain its reasoning before providing the final answer."
+        )
+    elif technique == "Persona-based":
+        enhancement_instruction = (
+            "Generate a persona-based prompt based on the user's input. "
+            "Assign a specific persona (e.g., 'You are a helpful and knowledgeable AI assistant', 'You are a seasoned data scientist') "
+            "to the model that is relevant to the user's prompt, and then present the user's prompt."
+        )
 
-    enriched_prompt = enrich_prompt(prompt, prompt_technique)
+    full_enhancement_prompt = (
+        f"The user wants to apply the '{technique}' prompt engineering technique to their prompt. "
+        f"Here is the user's original prompt: '{user_prompt}'.\n\n"
+        f"Your task is to generate an enhanced prompt by applying the '{technique}' technique. "
+        f"{enhancement_instruction}\n\n"
+        "Provide only the enhanced prompt, without any additional conversational text."
+    )
 
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
-        try:
-            response = model.generate_content(
-                enriched_prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k
-                ),
-                stream=True
+    st.write(f"Debug: Selected technique in enrich_prompt: {technique}, temperature {temperature}, top_p {top_p}, top_k {top_k}")
+    try:
+        response = model.generate_content(
+            full_enhancement_prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k
             )
-            for chunk in response:
-                full_response += chunk.text
-                message_placeholder.markdown(full_response + "▌")
-            message_placeholder.markdown(full_response)
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
-            full_response = "Error: Could not generate response."
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+        )
+        return response.text
+    except Exception as e:
+        st.error(f"Error generating enhanced prompt with Gemini: {e}")
+        return user_prompt # Fallback to original prompt on error
+
+# User input area
+user_input_container = st.container()
+with user_input_container:
+    st.session_state.user_input = st.text_area("Enter your prompt here...", value=st.session_state.user_input, height=150, key="user_prompt_input")
+    
+    col1, col2 = st.columns([3, 8]) # Adjusted column ratio to give more width to the first button
+    with col1:
+        if st.button("Enhance Prompt"):
+            st.session_state.enhanced_prompt = enrich_prompt(st.session_state.user_input, prompt_technique, model, temperature, top_p, top_k)
+            st.rerun()
+    with col2:
+        if st.button("Send Prompt"):
+            prompt_to_send = st.session_state.user_input
+            if prompt_to_send:
+                st.session_state.messages.append({"role": "user", "content": prompt_to_send})
+                with st.chat_message("user"):
+                    st.markdown(prompt_to_send)
+
+                enriched_prompt = enrich_prompt(prompt_to_send, prompt_technique, model, temperature, top_p, top_k)
+
+                with st.chat_message("assistant"):
+                    message_placeholder = st.empty()
+                    full_response = ""
+                    try:
+                        response = model.generate_content(
+                            enriched_prompt,
+                            generation_config=genai.GenerationConfig(
+                                temperature=temperature,
+                                top_p=top_p,
+                                top_k=top_k
+                            ),
+                            stream=True
+                        )
+                        for chunk in response:
+                            full_response += chunk.text
+                            message_placeholder.markdown(full_response + "▌")
+                        message_placeholder.markdown(full_response)
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
+                        full_response = "Error: Could not generate response."
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+                st.session_state.user_input = "" # Clear input after sending
+                st.rerun()
+
+# Display enhanced prompt for approval
+if st.session_state.enhanced_prompt:
+    st.subheader("Suggested Enhanced Prompt")
+    st.text_area("Review and Approve", value=st.session_state.enhanced_prompt, height=150, key="enhanced_prompt_review")
+    
+    col_approve, col_reject = st.columns(2)
+    with col_approve:
+        if st.button("Approve Enhanced Prompt"):
+            st.session_state.user_input = st.session_state.enhanced_prompt
+            st.session_state.enhanced_prompt = ""
+            st.rerun()
+    with col_reject:
+        if st.button("Reject Enhanced Prompt"):
+            st.session_state.enhanced_prompt = ""
+            st.rerun()
